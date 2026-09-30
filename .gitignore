@@ -1,0 +1,52 @@
+# Dependencies
+/node_modules
+/.pnpm-store
+
+# Production build / Output
+/dist
+/build
+/out
+*.tsbuildinfo
+
+# Environment variables & secrets (NUNCA subir a Git)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Firebase / Service Account Keys
+*firebase-key*.json
+serviceAccountKey.json
+*.pem
+
+# Logs & Diagnostics
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Vitest / Testing artifacts
+/coverage
+/.vitest
+*.lcov
+
+# IDE & Editor files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS Generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
