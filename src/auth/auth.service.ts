@@ -10,8 +10,12 @@ export class AuthService {
 
   constructor(private readonly firebaseService: FirebaseService) {}
 
-  // 1. SINCRONIZAR USUARIO (El método que ya tenías)
+  // 1. SINCRONIZAR USUARIO
   async syncUser(registerUserDto: RegisterUserDto) {
+    if (!registerUserDto.uid) {
+      throw new BadRequestException('El UID del usuario es obligatorio para sincronizar.');
+    }
+
     const db = this.firebaseService.getFirestore();
     const userRef = db.collection(this.collectionName).doc(registerUserDto.uid);
     const userDoc = await userRef.get();
