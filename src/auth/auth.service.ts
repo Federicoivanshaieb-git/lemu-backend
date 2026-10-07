@@ -214,7 +214,7 @@ export class AuthService {
     }
   }
 
-  // 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> VERIFICADO AUTOMÁTICAMENTE
+// 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> REQUIERE CÓDIGO OTP
   async googleLogin(googleLoginDto: GoogleLoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -222,29 +222,73 @@ export class AuthService {
     try {
       const decodedToken = await auth.verifyIdToken(googleLoginDto.idToken);
       const uid = decodedToken.uid;
+      const email = decodedToken.email || googleLoginDto.email;
 
       const userRef = db.collection(this.collectionName).doc(uid);
       const userDoc = await userRef.get();
 
+      // Si el usuario no existe en Firestore, lo creamos y le enviamos OTP
       if (!userDoc.exists) {
+        const otpCode = this.generateOtp();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
         const newUser = {
           uid,
-          email: decodedToken.email || googleLoginDto.email,
+          email,
           name: decodedToken.name || googleLoginDto.name || 'Usuario Google',
           picture: decodedToken.picture || googleLoginDto.picture || '',
           role: 'client',
           provider: 'google',
-          isEmailVerified: true, // Google verifica automáticamente la propiedad del mail
+          isEmailVerified: false, // Forzar verificación OTP
+          otpCode,
+          otpExpiresAt,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
 
         await userRef.set(newUser);
-        return { isNew: true, user: newUser };
+        await this.sendVerificationEmail(email, otpCode);
+
+        return {
+          message: 'Usuario registrado con Google. Se envió un código a tu correo.',
+          email,
+          requiresVerification: true,
+        };
       }
 
-      return { isNew: false, user: userDoc.data() };
+      const userData = userDoc.data();
+
+      // Si el usuario ya existe pero no está verificado
+      if (!userData?.isEmailVerified) {
+        const otpCode = this.generateOtp();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        await userRef.update({
+          otpCode,
+          otpExpiresAt,
+          updatedAt: new Date().toISOString(),
+        });
+
+        await this.sendVerificationEmail(email, otpCode);
+
+        throw new UnauthorizedException({
+          message: 'Debes verificar tu correo electrónico antes de ingresar.',
+          requiresVerification: true,
+          email,
+        });
+      }
+
+      // Usuario verificado de Google
+      const customToken = await auth.createCustomToken(uid);
+
+      return {
+        token: customToken,
+        user: userData,
+      };
     } catch (error: any) {
+      if (error?.response?.requiresVerification) {
+        throw new UnauthorizedException(error.response);
+      }
       throw new UnauthorizedException('Token de Google inválido o expirado.');
     }
   }
