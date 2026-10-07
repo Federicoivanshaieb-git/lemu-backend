@@ -214,7 +214,7 @@ export class AuthService {
     }
   }
 
-// 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> REQUIERE CÓDIGO OTP
+// 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> FORZAR CÓDIGO OTP
   async googleLogin(googleLoginDto: GoogleLoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -227,7 +227,7 @@ export class AuthService {
       const userRef = db.collection(this.collectionName).doc(uid);
       const userDoc = await userRef.get();
 
-      // Si el usuario no existe en Firestore, lo creamos y le enviamos OTP
+      // CASE A: El usuario no existe en Firestore (Primer registro)
       if (!userDoc.exists) {
         const otpCode = this.generateOtp();
         const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -239,7 +239,7 @@ export class AuthService {
           picture: decodedToken.picture || googleLoginDto.picture || '',
           role: 'client',
           provider: 'google',
-          isEmailVerified: false, // Forzar verificación OTP
+          isEmailVerified: false, // Guardamos como no verificado
           otpCode,
           otpExpiresAt,
           createdAt: new Date().toISOString(),
@@ -249,16 +249,17 @@ export class AuthService {
         await userRef.set(newUser);
         await this.sendVerificationEmail(email, otpCode);
 
-        return {
-          message: 'Usuario registrado con Google. Se envió un código a tu correo.',
-          email,
+        // Lanzamos la excepción para bloquear el ingreso y obligar al frontend a redirigir
+        throw new UnauthorizedException({
+          message: 'Debes verificar tu correo electrónico para completar el registro.',
           requiresVerification: true,
-        };
+          email,
+        });
       }
 
       const userData = userDoc.data();
 
-      // Si el usuario ya existe pero no está verificado
+      // CASE B: El usuario ya existe pero NO está verificado (isEmailVerified === false)
       if (!userData?.isEmailVerified) {
         const otpCode = this.generateOtp();
         const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -278,7 +279,7 @@ export class AuthService {
         });
       }
 
-      // Usuario verificado de Google
+      // CASE C: Usuario verificado previamente -> Se le otorga el Custom Token
       const customToken = await auth.createCustomToken(uid);
 
       return {
@@ -289,7 +290,7 @@ export class AuthService {
       if (error?.response?.requiresVerification) {
         throw new UnauthorizedException(error.response);
       }
-      throw new UnauthorizedException('Token de Google inválido o expirado.');
+      throw new UnauthorizedException(error.message || 'Token de Google inválido o expirado.');
     }
   }
 }
