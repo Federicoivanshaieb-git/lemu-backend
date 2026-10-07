@@ -4,6 +4,8 @@ import { AuthService } from './auth.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
+import { VerifyCodeDto } from './dto/verify-code.dto';
+import { ResendCodeDto } from './dto/resend-code.dto';
 
 @ApiTags('Auth (Autenticación)')
 @Controller('auth')
@@ -25,11 +27,28 @@ export class AuthController {
     return this.authService.register(registerUserDto);
   }
 
+  @Post('verify-code')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verificar el código OTP enviado al correo' })
+  @ApiResponse({ status: 200, description: 'Código verificado con éxito.' })
+  @ApiResponse({ status: 400, description: 'Código inválido o expirado.' })
+  verifyCode(@Body() verifyCodeDto: VerifyCodeDto) {
+    return this.authService.verifyCode(verifyCodeDto.email, verifyCodeDto.code);
+  }
+
+  @Post('resend-code')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reenviar código de verificación por correo' })
+  @ApiResponse({ status: 200, description: 'Nuevo código enviado exitosamente.' })
+  resendCode(@Body() resendCodeDto: ResendCodeDto) {
+    return this.authService.resendCode(resendCodeDto.email);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Iniciar sesión con Email y Contraseña' })
   @ApiResponse({ status: 200, description: 'Login exitoso, retorna Token y datos de usuario.' })
-  @ApiResponse({ status: 401, description: 'Credenciales inválidas.' })
+  @ApiResponse({ status: 401, description: 'Credenciales inválidas o correo no verificado.' })
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
   }

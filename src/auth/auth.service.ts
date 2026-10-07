@@ -10,6 +10,17 @@ export class AuthService {
 
   constructor(private readonly firebaseService: FirebaseService) {}
 
+  // Helper para generar un código de 6 dígitos
+  private generateOtp(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  // Helper para enviar el código por email (Integrar con Nodemailer/Resend)
+  private async sendVerificationEmail(email: string, code: string) {
+    // TODO: Conectar con tu servicio de envío de correos (ej. Nodemailer, Resend, SendGrid)
+    console.log(`[AUTH SERVICE] Código OTP para ${email}: ${code}`);
+  }
+
   // 1. SINCRONIZAR USUARIO
   async syncUser(registerUserDto: RegisterUserDto) {
     if (!registerUserDto.uid) {
@@ -24,6 +35,7 @@ export class AuthService {
       const newUser = {
         ...registerUserDto,
         role: 'client',
+        isEmailVerified: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -34,12 +46,16 @@ export class AuthService {
     return { isNew: false, user: userDoc.data() };
   }
 
-  // 2. REGISTRO LOCAL CON EMAIL Y CONTRASEÑA
+  // 2. REGISTRO LOCAL CON EMAIL Y CONTRASEÑA + ENVÍO DE CÓDIGO OTP
   async register(registerUserDto: RegisterUserDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
 
     try {
+      // Generar código OTP y tiempo de expiración (10 minutos)
+      const otpCode = this.generateOtp();
+      const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
       // Crear el usuario en Firebase Auth
       const userRecord = await auth.createUser({
         email: registerUserDto.email,
@@ -47,7 +63,7 @@ export class AuthService {
         displayName: registerUserDto.name,
       });
 
-      // Crear el perfil del usuario en Firestore utilizando el UID generado
+      // Crear el perfil del usuario en Firestore
       const newUser = {
         uid: userRecord.uid,
         email: registerUserDto.email,
@@ -55,15 +71,22 @@ export class AuthService {
         phone: registerUserDto.phone || '',
         role: 'client',
         provider: 'password',
+        isEmailVerified: false,
+        otpCode,
+        otpExpiresAt,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
 
       await db.collection(this.collectionName).doc(userRecord.uid).set(newUser);
 
+      // Enviar mail con el código
+      await this.sendVerificationEmail(registerUserDto.email, otpCode);
+
       return {
-        message: 'Usuario registrado con éxito',
-        user: newUser,
+        message: 'Usuario registrado. Revisa tu correo electrónico para verificar tu cuenta.',
+        email: registerUserDto.email,
+        requiresVerification: true,
       };
     } catch (error: any) {
       if (error.code === 'auth/email-already-exists') {
@@ -73,41 +96,130 @@ export class AuthService {
     }
   }
 
-  // 3. LOGIN TRADICIONAL
+  // 3. VERIFICAR CÓDIGO OTP DE EMAIL
+  async verifyCode(email: string, code: string) {
+    const auth = this.firebaseService.getAuth();
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      const userRecord = await auth.getUserByEmail(email);
+      const userRef = db.collection(this.collectionName).doc(userRecord.uid);
+      const userDoc = await userRef.get();
+
+      if (!userDoc.exists) {
+        throw new BadRequestException('Usuario no encontrado.');
+      }
+
+      const userData = userDoc.data();
+
+      if (userData?.isEmailVerified) {
+        return { message: 'El correo electrónico ya se encuentra verificado.' };
+      }
+
+      if (userData?.otpCode !== code) {
+        throw new BadRequestException('El código de verificación es incorrecto.');
+      }
+
+      if (new Date(userData?.otpExpiresAt) < new Date()) {
+        throw new BadRequestException('El código de verificación ha expirado. Solicita uno nuevo.');
+      }
+
+      // Marcar usuario como verificado y limpiar OTP
+      await userRef.update({
+        isEmailVerified: true,
+        otpCode: null,
+        otpExpiresAt: null,
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Crear token de sesión
+      const customToken = await auth.createCustomToken(userRecord.uid);
+
+      return {
+        message: 'Correo verificado con éxito.',
+        token: customToken,
+        user: { ...userData, isEmailVerified: true },
+      };
+    } catch (error: any) {
+      throw new BadRequestException(error.message || 'Error al verificar el código.');
+    }
+  }
+
+  // 4. REENVIAR CÓDIGO OTP
+  async resendCode(email: string) {
+    const auth = this.firebaseService.getAuth();
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      const userRecord = await auth.getUserByEmail(email);
+      const userRef = db.collection(this.collectionName).doc(userRecord.uid);
+      const userDoc = await userRef.get();
+
+      if (!userDoc.exists) {
+        throw new BadRequestException('Usuario no encontrado.');
+      }
+
+      const otpCode = this.generateOtp();
+      const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      await userRef.update({
+        otpCode,
+        otpExpiresAt,
+        updatedAt: new Date().toISOString(),
+      });
+
+      await this.sendVerificationEmail(email, otpCode);
+
+      return { message: 'Se ha enviado un nuevo código de verificación a tu correo.' };
+    } catch (error: any) {
+      throw new BadRequestException(error.message || 'Error al reenviar el código.');
+    }
+  }
+
+  // 5. LOGIN TRADICIONAL (VALIDA SI ESTÁ VERIFICADO)
   async login(loginDto: LoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
 
     try {
-      // Buscar usuario en Firebase Auth por Email
       const userRecord = await auth.getUserByEmail(loginDto.email);
-      
-      // Obtener datos del perfil desde Firestore
       const userDoc = await db.collection(this.collectionName).doc(userRecord.uid).get();
 
       if (!userDoc.exists) {
         throw new UnauthorizedException('Usuario no encontrado en la base de datos.');
       }
 
-      // Crear un custom token de Firebase para enviar al Frontend
+      const userData = userDoc.data();
+
+      // Bloquear login si no ha verificado el email
+      if (!userData?.isEmailVerified) {
+        throw new UnauthorizedException({
+          message: 'Debes verificar tu correo electrónico antes de ingresar.',
+          requiresVerification: true,
+          email: loginDto.email,
+        });
+      }
+
       const customToken = await auth.createCustomToken(userRecord.uid);
 
       return {
         token: customToken,
-        user: userDoc.data(),
+        user: userData,
       };
     } catch (error: any) {
+      if (error?.response?.requiresVerification) {
+        throw new UnauthorizedException(error.response);
+      }
       throw new UnauthorizedException('Credenciales inválidas o usuario no registrado.');
     }
   }
 
-  // 4. LOGIN / REGISTRO CON GOOGLE (GMAIL)
+  // 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> VERIFICADO AUTOMÁTICAMENTE
   async googleLogin(googleLoginDto: GoogleLoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
 
     try {
-      // Verificar el token enviado desde el Frontend tras autenticarse con Google
       const decodedToken = await auth.verifyIdToken(googleLoginDto.idToken);
       const uid = decodedToken.uid;
 
@@ -122,6 +234,7 @@ export class AuthService {
           picture: decodedToken.picture || googleLoginDto.picture || '',
           role: 'client',
           provider: 'google',
+          isEmailVerified: true, // Google verifica automáticamente la propiedad del mail
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };

@@ -8,13 +8,11 @@ import { AppModule } from './app.module.js';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Proteger cabeceras HTTP contra exploits conocidos (XSS, Clickjacking, MIME sniffing, etc.)
+
   app.use(helmet());
 
-  // Confiar en el proxy inverso (Render) para capturar la IP real del cliente en Throttler
   app.set('trust proxy', true);
 
-  // Configuración estricta de CORS
   app.enableCors({
     origin: [
       'http://localhost:3000',
@@ -23,10 +21,8 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Prefijo global de API
   app.setGlobalPrefix('api/v1');
 
-  // Pipe global para validación estricta de DTOs
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -35,7 +31,6 @@ async function bootstrap() {
     }),
   );
 
-  // Configuración de Swagger
   const config = new DocumentBuilder()
     .setTitle('API Lemú - Servicios')
     .setDescription('Documentación de endpoints del backend NestJS para Lemú')
