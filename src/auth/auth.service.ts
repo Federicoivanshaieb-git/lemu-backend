@@ -3,25 +3,55 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
+import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class AuthService {
   private readonly collectionName = 'users';
+  private transporter: nodemailer.Transporter;
 
-  constructor(private readonly firebaseService: FirebaseService) {}
+  constructor(private readonly firebaseService: FirebaseService) {
+    this.transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: true,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
 
-  // Helper para generar un código de 6 dígitos
   private generateOtp(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  // Helper para enviar el código por email (Integrar con Nodemailer/Resend)
   private async sendVerificationEmail(email: string, code: string) {
-    // TODO: Conectar con tu servicio de envío de correos (ej. Nodemailer, Resend, SendGrid)
-    console.log(`[AUTH SERVICE] Código OTP para ${email}: ${code}`);
+    const mailOptions = {
+      from: `"Lemú Paisajismo" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: 'Código de Verificación - Lemú Paisajismo',
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #f5f2eb; color: #1b3022; border-radius: 10px; max-width: 500px; margin: 0 auto;">
+          <h2 style="color: #1b3022; text-align: center;">Lemú Paisajismo</h2>
+          <p>Hola,</p>
+          <p>Tu código de verificación para completar tu ingreso es:</p>
+          <div style="background-color: #1b3022; color: #f5f2eb; font-size: 28px; font-weight: bold; letter-spacing: 6px; text-align: center; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            ${code}
+          </div>
+          <p style="font-size: 13px; color: #666;">Este código caducará en 10 minutos. Si no solicitaste este código, podés ignorar este correo.</p>
+        </div>
+      `,
+    };
+
+    try {
+      await this.transporter.sendMail(mailOptions);
+      console.log(`[MAILER] Código OTP enviado con éxito a ${email}`);
+    } catch (error) {
+      console.error(`[MAILER ERROR] Error al enviar correo a ${email}:`, error);
+    }
   }
 
-  // 1. SINCRONIZAR USUARIO
   async syncUser(registerUserDto: RegisterUserDto) {
     if (!registerUserDto.uid) {
       throw new BadRequestException('El UID del usuario es obligatorio para sincronizar.');
@@ -46,24 +76,20 @@ export class AuthService {
     return { isNew: false, user: userDoc.data() };
   }
 
-  // 2. REGISTRO LOCAL CON EMAIL Y CONTRASEÑA + ENVÍO DE CÓDIGO OTP
   async register(registerUserDto: RegisterUserDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
 
     try {
-      // Generar código OTP y tiempo de expiración (10 minutos)
       const otpCode = this.generateOtp();
       const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-      // Crear el usuario en Firebase Auth
       const userRecord = await auth.createUser({
         email: registerUserDto.email,
         password: registerUserDto.password,
         displayName: registerUserDto.name,
       });
 
-      // Crear el perfil del usuario en Firestore
       const newUser = {
         uid: userRecord.uid,
         email: registerUserDto.email,
@@ -79,8 +105,6 @@ export class AuthService {
       };
 
       await db.collection(this.collectionName).doc(userRecord.uid).set(newUser);
-
-      // Enviar mail con el código
       await this.sendVerificationEmail(registerUserDto.email, otpCode);
 
       return {
@@ -96,7 +120,6 @@ export class AuthService {
     }
   }
 
-  // 3. VERIFICAR CÓDIGO OTP DE EMAIL
   async verifyCode(email: string, code: string) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -124,7 +147,6 @@ export class AuthService {
         throw new BadRequestException('El código de verificación ha expirado. Solicita uno nuevo.');
       }
 
-      // Marcar usuario como verificado y limpiar OTP
       await userRef.update({
         isEmailVerified: true,
         otpCode: null,
@@ -132,7 +154,6 @@ export class AuthService {
         updatedAt: new Date().toISOString(),
       });
 
-      // Crear token de sesión
       const customToken = await auth.createCustomToken(userRecord.uid);
 
       return {
@@ -145,7 +166,6 @@ export class AuthService {
     }
   }
 
-  // 4. REENVIAR CÓDIGO OTP
   async resendCode(email: string) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -176,7 +196,6 @@ export class AuthService {
     }
   }
 
-  // 5. LOGIN TRADICIONAL (VALIDA SI ESTÁ VERIFICADO)
   async login(loginDto: LoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -191,7 +210,6 @@ export class AuthService {
 
       const userData = userDoc.data();
 
-      // Bloquear login si no ha verificado el email
       if (!userData?.isEmailVerified) {
         throw new UnauthorizedException({
           message: 'Debes verificar tu correo electrónico antes de ingresar.',
@@ -214,7 +232,6 @@ export class AuthService {
     }
   }
 
-// 6. LOGIN / REGISTRO CON GOOGLE (GMAIL) -> FORZAR CÓDIGO OTP
   async googleLogin(googleLoginDto: GoogleLoginDto) {
     const auth = this.firebaseService.getAuth();
     const db = this.firebaseService.getFirestore();
@@ -227,7 +244,6 @@ export class AuthService {
       const userRef = db.collection(this.collectionName).doc(uid);
       const userDoc = await userRef.get();
 
-      // CASE A: El usuario no existe en Firestore (Primer registro)
       if (!userDoc.exists) {
         const otpCode = this.generateOtp();
         const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -239,7 +255,7 @@ export class AuthService {
           picture: decodedToken.picture || googleLoginDto.picture || '',
           role: 'client',
           provider: 'google',
-          isEmailVerified: false, // Guardamos como no verificado
+          isEmailVerified: false,
           otpCode,
           otpExpiresAt,
           createdAt: new Date().toISOString(),
@@ -249,7 +265,6 @@ export class AuthService {
         await userRef.set(newUser);
         await this.sendVerificationEmail(email, otpCode);
 
-        // Lanzamos la excepción para bloquear el ingreso y obligar al frontend a redirigir
         throw new UnauthorizedException({
           message: 'Debes verificar tu correo electrónico para completar el registro.',
           requiresVerification: true,
@@ -259,7 +274,6 @@ export class AuthService {
 
       const userData = userDoc.data();
 
-      // CASE B: El usuario ya existe pero NO está verificado (isEmailVerified === false)
       if (!userData?.isEmailVerified) {
         const otpCode = this.generateOtp();
         const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -279,7 +293,6 @@ export class AuthService {
         });
       }
 
-      // CASE C: Usuario verificado previamente -> Se le otorga el Custom Token
       const customToken = await auth.createCustomToken(uid);
 
       return {
